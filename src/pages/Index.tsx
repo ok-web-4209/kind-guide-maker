@@ -74,7 +74,7 @@ const Index = () => {
             <Button 
               className="w-full h-14 text-lg" 
               size="lg"
-              onClick={() => navigate('/play')}
+              onClick={() => navigate('/continue-season')}
             >
               <Play className="w-5 h-5 mr-2" />
               Continue Season
