@@ -234,10 +234,25 @@ const Statistics = () => {
   const selectedPlayer = playerStats.find(p => p.playerId === selectedPlayerId);
   const selectedCourse = courseStats.find(c => c.course.id === selectedCourseId);
 
+  // Sanitize CSV values to prevent formula injection attacks
+  // Prefixes values starting with =, +, -, @, or tab with a single quote
+  const sanitizeCSVValue = (value: string | number): string => {
+    const str = String(value);
+    // Check for formula injection characters and escape them
+    if (/^[=+\-@\t]/.test(str)) {
+      return `'${str}`;
+    }
+    // Escape double quotes and wrap in quotes if contains comma or quotes
+    if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+      return `"${str.replace(/"/g, '""')}"`;
+    }
+    return str;
+  };
+
   const getExportData = () => {
     return playerStats.map((stat, index) => ({
       Rank: index + 1,
-      Player: stat.name,
+      Player: sanitizeCSVValue(stat.name),
       'Holes Won': stat.holesWon,
       'Rounds Won': stat.totalWins,
       'Hole-in-Ones': stat.holeInOnes,
@@ -249,14 +264,14 @@ const Statistics = () => {
     const headers = ['Rank', 'Player', 'Holes Won', 'Rounds Won', 'Hole-in-Ones', 'Rounds Played'];
     const rows = playerStats.map((stat, index) => [
       index + 1,
-      stat.name,
+      sanitizeCSVValue(stat.name),
       stat.holesWon,
       stat.totalWins,
       stat.holeInOnes,
       stat.roundsPlayed,
     ]);
 
-    const csvContent = [headers, ...rows].map(row => row.join(',')).join('\n');
+    const csvContent = [headers, ...rows].map(row => row.map(cell => sanitizeCSVValue(cell)).join(',')).join('\n');
     const blob = new Blob([csvContent], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -274,12 +289,12 @@ const Statistics = () => {
     const playerSheet = XLSX.utils.json_to_sheet(playerData);
     XLSX.utils.book_append_sheet(workbook, playerSheet, 'Player Statistics');
 
-    // Course stats sheet
+    // Course stats sheet - sanitize user-supplied names to prevent formula injection
     const courseData = courseStats.flatMap(({ course, rankings }) =>
       rankings.map((r, i) => ({
-        Course: course.name,
+        Course: sanitizeCSVValue(course.name),
         Rank: i + 1,
-        Player: r.player?.name,
+        Player: sanitizeCSVValue(r.player?.name || ''),
         Score: r.score,
         Date: format(new Date(r.date), 'yyyy-MM-dd'),
       }))
@@ -289,12 +304,12 @@ const Statistics = () => {
       XLSX.utils.book_append_sheet(workbook, courseSheet, 'Course Rankings');
     }
 
-    // Season stats sheet
+    // Season stats sheet - sanitize user-supplied names to prevent formula injection
     const seasonData = seasonStats.flatMap(({ season, leaderboard }) =>
       leaderboard.map((entry, i) => ({
-        Season: season.name,
+        Season: sanitizeCSVValue(season.name),
         Rank: i + 1,
-        Player: entry.player?.name,
+        Player: sanitizeCSVValue(entry.player?.name || ''),
         Score: entry.score,
         'Hole-in-Ones': entry.holeInOnes,
       }))
