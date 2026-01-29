@@ -5,7 +5,7 @@ import { componentTagger } from "lovable-tagger";
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
-  base: '/kind-guide-maker/',
+  base: '/my-golf-app/',
   server: {
     host: "::",
     port: 8080,
