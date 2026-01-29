@@ -18,14 +18,32 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { useGolf } from '@/contexts/GolfContext';
-import { ArrowLeft, Trophy, User, MapPin, Calendar, Star, Download, FileSpreadsheet, FileText } from 'lucide-react';
+import { ArrowLeft, Trophy, User, MapPin, Calendar, Star, Download, FileSpreadsheet, FileText, ChevronRight } from 'lucide-react';
+import { format } from 'date-fns';
 import * as XLSX from 'xlsx';
 
 const Statistics = () => {
   const navigate = useNavigate();
   const { players, seasons, courses, rounds } = useGolf();
   const [selectedSeasonId, setSelectedSeasonId] = useState<string>('all');
+  const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null);
+  const [selectedCourseId, setSelectedCourseId] = useState<string | null>(null);
 
   // Filter data by selected season
   const filteredRounds = useMemo(() => {
@@ -43,6 +61,13 @@ const Statistics = () => {
       holesWon: number;
       holeInOnes: number;
       roundsPlayed: number;
+      courseHistory: Array<{
+        courseId: string;
+        courseName: string;
+        score: number;
+        date: string;
+        holeInOnes: number;
+      }>;
     }> = {};
 
     players.forEach(player => {
@@ -54,40 +79,54 @@ const Statistics = () => {
         holesWon: 0,
         holeInOnes: 0,
         roundsPlayed: 0,
+        courseHistory: [],
       };
     });
 
     filteredRounds.forEach(round => {
-      // Count rounds played
+      const course = courses.find(c => c.id === round.courseId);
+      
+      // Count rounds played and build history
       round.playerIds.forEach(playerId => {
         if (stats[playerId]) {
           stats[playerId].roundsPlayed++;
         }
       });
 
-      // Count holes won and hole-in-ones
+      // Calculate score per player for this round
+      const roundScores: Record<string, number> = {};
+      const roundHoleInOnes: Record<string, number> = {};
+      
       round.holeResults.forEach(hole => {
         hole.winnerIds.forEach(winnerId => {
           if (stats[winnerId]) {
             stats[winnerId].holesWon++;
+            roundScores[winnerId] = (roundScores[winnerId] || 0) + 1;
           }
         });
         hole.holeInOnePlayerIds.forEach(playerId => {
           if (stats[playerId]) {
             stats[playerId].holeInOnes++;
+            roundHoleInOnes[playerId] = (roundHoleInOnes[playerId] || 0) + 1;
           }
         });
       });
 
+      // Add to course history
+      round.playerIds.forEach(playerId => {
+        if (stats[playerId] && round.completedAt) {
+          stats[playerId].courseHistory.push({
+            courseId: round.courseId,
+            courseName: course?.name || 'Unknown',
+            score: roundScores[playerId] || 0,
+            date: round.startedAt,
+            holeInOnes: roundHoleInOnes[playerId] || 0,
+          });
+        }
+      });
+
       // Determine round winner (highest holes won in round)
       if (round.completedAt) {
-        const roundScores: Record<string, number> = {};
-        round.holeResults.forEach(hole => {
-          hole.winnerIds.forEach(winnerId => {
-            roundScores[winnerId] = (roundScores[winnerId] || 0) + 1;
-          });
-        });
-
         const maxScore = Math.max(...Object.values(roundScores), 0);
         if (maxScore > 0) {
           Object.entries(roundScores).forEach(([playerId, score]) => {
@@ -101,46 +140,80 @@ const Statistics = () => {
 
     // Sort by holesWon (highest first - the winner!)
     return Object.values(stats).sort((a, b) => b.holesWon - a.holesWon);
-  }, [players, filteredRounds]);
+  }, [players, filteredRounds, courses]);
 
-  // Course statistics
+  // Course statistics with player rankings
   const courseStats = useMemo(() => {
     return courses.map(course => {
-      const courseRounds = filteredRounds.filter(r => r.courseId === course.id);
-      const completedRounds = courseRounds.filter(r => r.completedAt);
+      const courseRounds = filteredRounds.filter(r => r.courseId === course.id && r.completedAt);
       
+      // Build rankings: best scores per player
+      const playerBestScores: Record<string, { score: number; date: string }> = {};
+      
+      courseRounds.forEach(round => {
+        const roundScores: Record<string, number> = {};
+        round.holeResults.forEach(hole => {
+          hole.winnerIds.forEach(winnerId => {
+            roundScores[winnerId] = (roundScores[winnerId] || 0) + 1;
+          });
+        });
+        
+        Object.entries(roundScores).forEach(([playerId, score]) => {
+          if (!playerBestScores[playerId] || score > playerBestScores[playerId].score) {
+            playerBestScores[playerId] = { score, date: round.startedAt };
+          }
+        });
+      });
+
+      const rankings = Object.entries(playerBestScores)
+        .map(([playerId, data]) => ({
+          player: players.find(p => p.id === playerId),
+          score: data.score,
+          date: data.date,
+        }))
+        .filter(r => r.player)
+        .sort((a, b) => b.score - a.score);
+
       return {
         course,
-        roundsPlayed: completedRounds.length,
-        totalHolesPlayed: completedRounds.reduce(
-          (sum, r) => sum + r.holeResults.length, 
-          0
-        ),
+        roundsPlayed: courseRounds.length,
+        rankings,
       };
     }).sort((a, b) => b.roundsPlayed - a.roundsPlayed);
-  }, [courses, filteredRounds]);
+  }, [courses, filteredRounds, players]);
 
-  // Season statistics
+  // Season statistics with leaderboard
   const seasonStats = useMemo(() => {
     return seasons.map(season => {
       const seasonRounds = rounds.filter(r => r.seasonId === season.id);
       const completedRounds = seasonRounds.filter(r => r.completedAt);
       const seasonPlayers = players.filter(p => season.playerIds.includes(p.id));
 
-      // Calculate leaderboard for this season
-      const leaderboard: Record<string, number> = {};
+      // Calculate leaderboard with hole-in-ones
+      const leaderboard: Record<string, { score: number; holeInOnes: number }> = {};
+      
       seasonRounds.forEach(round => {
         round.holeResults.forEach(hole => {
           hole.winnerIds.forEach(winnerId => {
-            leaderboard[winnerId] = (leaderboard[winnerId] || 0) + 1;
+            if (!leaderboard[winnerId]) {
+              leaderboard[winnerId] = { score: 0, holeInOnes: 0 };
+            }
+            leaderboard[winnerId].score++;
+          });
+          hole.holeInOnePlayerIds.forEach(playerId => {
+            if (!leaderboard[playerId]) {
+              leaderboard[playerId] = { score: 0, holeInOnes: 0 };
+            }
+            leaderboard[playerId].holeInOnes++;
           });
         });
       });
 
       const sortedLeaderboard = Object.entries(leaderboard)
-        .map(([playerId, score]) => ({
+        .map(([playerId, data]) => ({
           player: players.find(p => p.id === playerId),
-          score,
+          score: data.score,
+          holeInOnes: data.holeInOnes,
         }))
         .filter(entry => entry.player)
         .sort((a, b) => b.score - a.score);
@@ -157,6 +230,9 @@ const Statistics = () => {
   const getInitials = (name: string) => {
     return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
   };
+
+  const selectedPlayer = playerStats.find(p => p.playerId === selectedPlayerId);
+  const selectedCourse = courseStats.find(c => c.course.id === selectedCourseId);
 
   const getExportData = () => {
     return playerStats.map((stat, index) => ({
@@ -191,10 +267,43 @@ const Statistics = () => {
   };
 
   const handleExportXLSX = () => {
-    const data = getExportData();
-    const worksheet = XLSX.utils.json_to_sheet(data);
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Statistics');
+    
+    // Player stats sheet
+    const playerData = getExportData();
+    const playerSheet = XLSX.utils.json_to_sheet(playerData);
+    XLSX.utils.book_append_sheet(workbook, playerSheet, 'Player Statistics');
+
+    // Course stats sheet
+    const courseData = courseStats.flatMap(({ course, rankings }) =>
+      rankings.map((r, i) => ({
+        Course: course.name,
+        Rank: i + 1,
+        Player: r.player?.name,
+        Score: r.score,
+        Date: format(new Date(r.date), 'yyyy-MM-dd'),
+      }))
+    );
+    if (courseData.length > 0) {
+      const courseSheet = XLSX.utils.json_to_sheet(courseData);
+      XLSX.utils.book_append_sheet(workbook, courseSheet, 'Course Rankings');
+    }
+
+    // Season stats sheet
+    const seasonData = seasonStats.flatMap(({ season, leaderboard }) =>
+      leaderboard.map((entry, i) => ({
+        Season: season.name,
+        Rank: i + 1,
+        Player: entry.player?.name,
+        Score: entry.score,
+        'Hole-in-Ones': entry.holeInOnes,
+      }))
+    );
+    if (seasonData.length > 0) {
+      const seasonSheet = XLSX.utils.json_to_sheet(seasonData);
+      XLSX.utils.book_append_sheet(workbook, seasonSheet, 'Season Standings');
+    }
+
     XLSX.writeFile(workbook, `golf-stats-${new Date().toISOString().split('T')[0]}.xlsx`);
   };
 
@@ -280,7 +389,8 @@ const Statistics = () => {
                 {playerStats.map((stat, index) => (
                   <Card 
                     key={stat.playerId} 
-                    className={index === 0 && stat.holesWon > 0 ? 'border-primary bg-primary/5' : ''}
+                    className={`cursor-pointer hover:border-primary/50 transition-colors ${index === 0 && stat.holesWon > 0 ? 'border-primary bg-primary/5' : ''}`}
+                    onClick={() => setSelectedPlayerId(stat.playerId)}
                   >
                     <CardContent className="py-4">
                       <div className="flex items-center gap-4">
@@ -303,9 +413,12 @@ const Statistics = () => {
                             {stat.roundsPlayed} round{stat.roundsPlayed !== 1 ? 's' : ''} played
                           </div>
                         </div>
-                        <div className="text-right">
-                          <div className="text-xl font-bold">{stat.holesWon}</div>
-                          <div className="text-xs text-muted-foreground">holes won</div>
+                        <div className="flex items-center gap-2">
+                          <div className="text-right">
+                            <div className="text-xl font-bold">{stat.holesWon}</div>
+                            <div className="text-xs text-muted-foreground">holes won</div>
+                          </div>
+                          <ChevronRight className="w-4 h-4 text-muted-foreground" />
                         </div>
                       </div>
                       {(stat.totalWins > 0 || stat.holeInOnes > 0) && (
@@ -342,19 +455,28 @@ const Statistics = () => {
               </Card>
             ) : (
               <div className="space-y-2">
-                {courseStats.map(({ course, roundsPlayed, totalHolesPlayed }) => (
-                  <Card key={course.id}>
+                {courseStats.map(({ course, roundsPlayed, rankings }) => (
+                  <Card 
+                    key={course.id} 
+                    className="cursor-pointer hover:border-primary/50 transition-colors"
+                    onClick={() => setSelectedCourseId(course.id)}
+                  >
                     <CardContent className="py-4">
                       <div className="flex items-center justify-between">
                         <div>
                           <div className="font-medium">{course.name}</div>
                           <div className="text-sm text-muted-foreground">
-                            {course.holesPerCourse} holes
+                            {course.holesPerCourse} holes • {roundsPlayed} rounds
                           </div>
                         </div>
-                        <div className="text-right">
-                          <div className="text-lg font-bold">{roundsPlayed}</div>
-                          <div className="text-xs text-muted-foreground">rounds</div>
+                        <div className="flex items-center gap-2">
+                          {rankings[0] && (
+                            <Badge variant="outline" className="text-xs">
+                              <Trophy className="w-3 h-3 mr-1" />
+                              {rankings[0].player?.name}
+                            </Badge>
+                          )}
+                          <ChevronRight className="w-4 h-4 text-muted-foreground" />
                         </div>
                       </div>
                     </CardContent>
@@ -392,18 +514,35 @@ const Statistics = () => {
                     </CardHeader>
                     <CardContent>
                       {leaderboard.length > 0 ? (
-                        <div className="space-y-2">
-                          <p className="text-xs text-muted-foreground uppercase tracking-wide">Leaderboard</p>
-                          {leaderboard.slice(0, 3).map((entry, index) => (
-                            <div key={entry.player?.id} className="flex items-center justify-between text-sm">
-                              <div className="flex items-center gap-2">
-                                <span className="w-5 text-muted-foreground">{index + 1}.</span>
-                                <span className="font-medium">{entry.player?.name}</span>
-                              </div>
-                              <span className="font-bold">{entry.score} pts</span>
-                            </div>
-                          ))}
-                        </div>
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead className="w-12">#</TableHead>
+                              <TableHead>Player</TableHead>
+                              <TableHead className="text-right">Score</TableHead>
+                              <TableHead className="text-right">Aces</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {leaderboard.map((entry, index) => (
+                              <TableRow key={entry.player?.id}>
+                                <TableCell className="font-medium">
+                                  {index === 0 ? <Trophy className="w-4 h-4 text-amber-500" /> : index + 1}
+                                </TableCell>
+                                <TableCell>{entry.player?.name}</TableCell>
+                                <TableCell className="text-right font-bold">{entry.score}</TableCell>
+                                <TableCell className="text-right">
+                                  {entry.holeInOnes > 0 && (
+                                    <span className="flex items-center justify-end gap-1">
+                                      <Star className="w-3 h-3 text-amber-500" />
+                                      {entry.holeInOnes}
+                                    </span>
+                                  )}
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
                       ) : (
                         <p className="text-sm text-muted-foreground">No rounds played yet</p>
                       )}
@@ -414,6 +553,137 @@ const Statistics = () => {
             )}
           </TabsContent>
         </Tabs>
+
+        {/* Player Detail Dialog */}
+        <Dialog open={!!selectedPlayerId} onOpenChange={() => setSelectedPlayerId(null)}>
+          <DialogContent className="max-w-md max-h-[80vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-3">
+                <Avatar className="h-10 w-10">
+                  <AvatarImage src={selectedPlayer?.avatar} />
+                  <AvatarFallback className="bg-primary/10 text-primary">
+                    {selectedPlayer ? getInitials(selectedPlayer.name) : ''}
+                  </AvatarFallback>
+                </Avatar>
+                {selectedPlayer?.name}
+              </DialogTitle>
+              <DialogDescription>
+                Course history and statistics
+              </DialogDescription>
+            </DialogHeader>
+            
+            {selectedPlayer && (
+              <div className="space-y-4">
+                {/* Summary Stats */}
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="text-center p-3 rounded-lg bg-muted">
+                    <div className="text-2xl font-bold">{selectedPlayer.holesWon}</div>
+                    <div className="text-xs text-muted-foreground">Holes Won</div>
+                  </div>
+                  <div className="text-center p-3 rounded-lg bg-muted">
+                    <div className="text-2xl font-bold">{selectedPlayer.totalWins}</div>
+                    <div className="text-xs text-muted-foreground">Round Wins</div>
+                  </div>
+                  <div className="text-center p-3 rounded-lg bg-amber-100 dark:bg-amber-900/20">
+                    <div className="text-2xl font-bold text-amber-800 dark:text-amber-300">{selectedPlayer.holeInOnes}</div>
+                    <div className="text-xs text-amber-700 dark:text-amber-400">Hole-in-Ones</div>
+                  </div>
+                </div>
+
+                {/* Course History Table */}
+                <div>
+                  <h4 className="text-sm font-medium mb-2">Course History</h4>
+                  {selectedPlayer.courseHistory.length > 0 ? (
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Course</TableHead>
+                          <TableHead className="text-right">Score</TableHead>
+                          <TableHead className="text-right">Date</TableHead>
+                          <TableHead className="text-right">Aces</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {selectedPlayer.courseHistory.map((entry, i) => (
+                          <TableRow key={i}>
+                            <TableCell className="font-medium">{entry.courseName}</TableCell>
+                            <TableCell className="text-right">{entry.score}</TableCell>
+                            <TableCell className="text-right text-muted-foreground">
+                              {format(new Date(entry.date), 'M/d/yy')}
+                            </TableCell>
+                            <TableCell className="text-right">
+                              {entry.holeInOnes > 0 && (
+                                <span className="flex items-center justify-end gap-1">
+                                  <Star className="w-3 h-3 text-amber-500" />
+                                  {entry.holeInOnes}
+                                </span>
+                              )}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  ) : (
+                    <p className="text-sm text-muted-foreground text-center py-4">No course history yet</p>
+                  )}
+                </div>
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
+
+        {/* Course Detail Dialog */}
+        <Dialog open={!!selectedCourseId} onOpenChange={() => setSelectedCourseId(null)}>
+          <DialogContent className="max-w-md max-h-[80vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <MapPin className="w-5 h-5 text-primary" />
+                {selectedCourse?.course.name}
+              </DialogTitle>
+              <DialogDescription>
+                Player rankings for this course
+              </DialogDescription>
+            </DialogHeader>
+            
+            {selectedCourse && (
+              <div className="space-y-4">
+                <div className="flex gap-4 text-sm text-muted-foreground">
+                  <span>{selectedCourse.course.holesPerCourse} holes</span>
+                  <span>{selectedCourse.roundsPlayed} rounds played</span>
+                </div>
+
+                {selectedCourse.rankings.length > 0 ? (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="w-12">#</TableHead>
+                        <TableHead>Player</TableHead>
+                        <TableHead className="text-right">Best Score</TableHead>
+                        <TableHead className="text-right">Date</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {selectedCourse.rankings.map((entry, index) => (
+                        <TableRow key={entry.player?.id}>
+                          <TableCell className="font-medium">
+                            {index === 0 ? <Trophy className="w-4 h-4 text-amber-500" /> : index + 1}
+                          </TableCell>
+                          <TableCell>{entry.player?.name}</TableCell>
+                          <TableCell className="text-right font-bold">{entry.score}</TableCell>
+                          <TableCell className="text-right text-muted-foreground">
+                            {format(new Date(entry.date), 'M/d/yy')}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                ) : (
+                  <p className="text-sm text-muted-foreground text-center py-4">No games played at this course</p>
+                )}
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
       </div>
     </div>
   );
