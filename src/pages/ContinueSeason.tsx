@@ -4,14 +4,27 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
 import { useGolf } from '@/contexts/GolfContext';
-import { ArrowLeft, Plus, Play, Calendar, MapPin, Trophy, Users, ChevronRight } from 'lucide-react';
+import { useToast } from '@/hooks/use-toast';
+import { ArrowLeft, Plus, Play, Calendar, MapPin, Trophy, Users, ChevronRight, Trash2 } from 'lucide-react';
 import { format } from 'date-fns';
 
 const ContinueSeason = () => {
   const navigate = useNavigate();
   const { seasonId } = useParams();
-  const { players, seasons, courses, rounds } = useGolf();
+  const { players, seasons, courses, rounds, deleteSeason } = useGolf();
+  const { toast } = useToast();
 
   // If seasonId is provided, show that season's details
   const selectedSeason = seasonId 
@@ -90,11 +103,13 @@ const ContinueSeason = () => {
                   <Card 
                     key={season.id} 
                     className="cursor-pointer hover:border-primary/50 transition-colors"
-                    onClick={() => navigate(`/continue-season/${season.id}`)}
                   >
                     <CardContent className="py-4">
                       <div className="flex items-center justify-between">
-                        <div className="space-y-1">
+                        <div 
+                          className="flex-1 space-y-1"
+                          onClick={() => navigate(`/continue-season/${season.id}`)}
+                        >
                           <div className="flex items-center gap-2">
                             <h3 className="font-semibold">{season.name}</h3>
                             <Badge variant="default" className="text-xs">Active</Badge>
@@ -110,7 +125,44 @@ const ContinueSeason = () => {
                             </span>
                           </div>
                         </div>
-                        <ChevronRight className="w-5 h-5 text-muted-foreground" />
+                        <div className="flex items-center gap-2">
+                          <AlertDialog>
+                            <AlertDialogTrigger asChild>
+                              <Button 
+                                variant="ghost" 
+                                size="icon"
+                                className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </Button>
+                            </AlertDialogTrigger>
+                            <AlertDialogContent>
+                              <AlertDialogHeader>
+                                <AlertDialogTitle>Delete Season?</AlertDialogTitle>
+                                <AlertDialogDescription>
+                                  This will permanently delete "{season.name}" and all {seasonRoundCount} associated rounds. This action cannot be undone.
+                                </AlertDialogDescription>
+                              </AlertDialogHeader>
+                              <AlertDialogFooter>
+                                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                <AlertDialogAction
+                                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                                  onClick={() => {
+                                    deleteSeason(season.id);
+                                    toast({
+                                      title: "Season deleted",
+                                      description: `"${season.name}" has been removed.`,
+                                    });
+                                  }}
+                                >
+                                  Delete
+                                </AlertDialogAction>
+                              </AlertDialogFooter>
+                            </AlertDialogContent>
+                          </AlertDialog>
+                          <ChevronRight className="w-5 h-5 text-muted-foreground" />
+                        </div>
                       </div>
                     </CardContent>
                   </Card>

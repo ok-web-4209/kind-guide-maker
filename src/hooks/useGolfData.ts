@@ -113,6 +113,12 @@ export function useGolfData() {
     ));
   }, []);
 
+  const deleteSeason = useCallback((seasonId: string) => {
+    setSeasons(prev => prev.filter(s => s.id !== seasonId));
+    // Also delete associated rounds
+    setRounds(prev => prev.filter(r => r.seasonId !== seasonId));
+  }, []);
+
   // Course actions
   const addCourse = useCallback((name: string, numberOfCourses: number, holesPerCourse: number, location?: string) => {
     const newCourse: Course = {
@@ -181,6 +187,7 @@ export function useGolfData() {
     createSeason,
     getActiveSeason,
     completeSeason,
+    deleteSeason,
     
     // Course actions
     addCourse,
