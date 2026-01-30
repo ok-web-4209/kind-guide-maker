@@ -1,23 +1,52 @@
-import { useState } from 'react';
+/// <reference types="@types/google.maps" />
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Search, MapPin, Loader2, ExternalLink } from 'lucide-react';
 
-interface SearchResult {
-  display_name: string;
-  lat: string;
-  lon: string;
-  name?: string;
+const GOOGLE_MAPS_API_KEY = 'AIzaSyAPhS0qB4vSfOE_0Q_VT5CqzQ05VKEUikw';
+
+interface PlacePrediction {
+  place_id: string;
+  description: string;
 }
 
 interface CourseSearchMapProps {
   onLocationSelect: (location: { name: string; address: string; lat: number; lng: number }) => void;
 }
 
+// Load Google Maps script dynamically
+const loadGoogleMapsScript = (): Promise<void> => {
+  return new Promise((resolve, reject) => {
+    if (typeof window !== 'undefined' && (window as any).google?.maps) {
+      resolve();
+      return;
+    }
+
+    const existingScript = document.getElementById('google-maps-script');
+    if (existingScript) {
+      existingScript.addEventListener('load', () => resolve());
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.id = 'google-maps-script';
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_API_KEY}&libraries=places`;
+    script.async = true;
+    script.defer = true;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('Failed to load Google Maps'));
+    document.head.appendChild(script);
+  });
+};
+
+const getGoogleMaps = () => (window as any).google?.maps;
+
 export function CourseSearchMap({ onLocationSelect }: CourseSearchMapProps) {
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [predictions, setPredictions] = useState<PlacePrediction[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+  const [isLoaded, setIsLoaded] = useState(false);
   const [selectedLocation, setSelectedLocation] = useState<{
     lat: number;
     lng: number;
@@ -25,48 +54,111 @@ export function CourseSearchMap({ onLocationSelect }: CourseSearchMapProps) {
     address: string;
   } | null>(null);
 
-  const handleSearch = async () => {
-    if (!searchQuery.trim()) return;
-    
+  const mapRef = useRef<HTMLDivElement>(null);
+  const mapInstanceRef = useRef<any>(null);
+  const markerRef = useRef<any>(null);
+  const autocompleteServiceRef = useRef<any>(null);
+  const placesServiceRef = useRef<any>(null);
+
+  // Initialize Google Maps
+  useEffect(() => {
+    loadGoogleMapsScript()
+      .then(() => {
+        setIsLoaded(true);
+      })
+      .catch((error) => {
+        console.error('Error loading Google Maps:', error);
+      });
+  }, []);
+
+  // Initialize map when loaded
+  useEffect(() => {
+    if (!isLoaded || !mapRef.current || mapInstanceRef.current) return;
+
+    const maps = getGoogleMaps();
+    if (!maps) return;
+
+    const map = new maps.Map(mapRef.current, {
+      center: { lat: 51.5074, lng: -0.1278 }, // Default: London
+      zoom: 10,
+      mapTypeControl: false,
+      streetViewControl: false,
+      fullscreenControl: false,
+    });
+
+    mapInstanceRef.current = map;
+    autocompleteServiceRef.current = new maps.places.AutocompleteService();
+    placesServiceRef.current = new maps.places.PlacesService(map);
+  }, [isLoaded]);
+
+  const handleSearch = useCallback(() => {
+    if (!searchQuery.trim() || !autocompleteServiceRef.current) return;
+
+    const maps = getGoogleMaps();
+    if (!maps) return;
+
     setIsSearching(true);
-    try {
-      const response = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchQuery + ' golf course')}&limit=5`
-      );
-      const data = await response.json();
-      setSearchResults(data);
-    } catch (error) {
-      console.error('Search failed:', error);
-    } finally {
-      setIsSearching(false);
-    }
-  };
+    autocompleteServiceRef.current.getPlacePredictions(
+      {
+        input: searchQuery + ' golf course',
+        types: ['establishment'],
+      },
+      (results: any, status: string) => {
+        setIsSearching(false);
+        if (status === maps.places.PlacesServiceStatus.OK && results) {
+          setPredictions(results.map((r: any) => ({
+            place_id: r.place_id,
+            description: r.description,
+          })));
+        } else {
+          setPredictions([]);
+        }
+      }
+    );
+  }, [searchQuery]);
 
-  const handleResultSelect = (result: SearchResult) => {
-    const lat = parseFloat(result.lat);
-    const lng = parseFloat(result.lon);
-    const name = result.name || result.display_name.split(',')[0];
-    
-    const location = {
-      lat,
-      lng,
-      name,
-      address: result.display_name,
-    };
-    
-    setSelectedLocation(location);
-    setSearchResults([]);
-    onLocationSelect(location);
-  };
+  const handleSelectPrediction = useCallback((prediction: PlacePrediction) => {
+    if (!placesServiceRef.current) return;
 
-  // Generate OpenStreetMap embed URL
-  const getMapEmbedUrl = () => {
-    if (selectedLocation) {
-      return `https://www.openstreetmap.org/export/embed.html?bbox=${selectedLocation.lng - 0.02}%2C${selectedLocation.lat - 0.01}%2C${selectedLocation.lng + 0.02}%2C${selectedLocation.lat + 0.01}&layer=mapnik&marker=${selectedLocation.lat}%2C${selectedLocation.lng}`;
-    }
-    // Default view (London area)
-    return 'https://www.openstreetmap.org/export/embed.html?bbox=-0.1278%2C51.5%2C-0.0778%2C51.52&layer=mapnik';
-  };
+    const maps = getGoogleMaps();
+    if (!maps) return;
+
+    placesServiceRef.current.getDetails(
+      {
+        placeId: prediction.place_id,
+        fields: ['geometry', 'name', 'formatted_address'],
+      },
+      (place: any, status: string) => {
+        if (status === maps.places.PlacesServiceStatus.OK && place?.geometry?.location) {
+          const lat = place.geometry.location.lat();
+          const lng = place.geometry.location.lng();
+          const name = place.name || prediction.description.split(',')[0];
+          const address = place.formatted_address || prediction.description;
+
+          const location = { lat, lng, name, address };
+          setSelectedLocation(location);
+          setPredictions([]);
+          onLocationSelect(location);
+
+          // Update map
+          if (mapInstanceRef.current) {
+            mapInstanceRef.current.setCenter({ lat, lng });
+            mapInstanceRef.current.setZoom(15);
+
+            // Update marker
+            if (markerRef.current) {
+              markerRef.current.setMap(null);
+            }
+            markerRef.current = new maps.Marker({
+              position: { lat, lng },
+              map: mapInstanceRef.current,
+              title: name,
+            });
+          }
+        }
+      }
+    );
+  }, [onLocationSelect]);
 
   return (
     <div className="space-y-3">
@@ -84,36 +176,38 @@ export function CourseSearchMap({ onLocationSelect }: CourseSearchMapProps) {
             <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 animate-spin text-muted-foreground" />
           )}
         </div>
-        <Button onClick={handleSearch} disabled={isSearching}>
+        <Button onClick={handleSearch} disabled={isSearching || !isLoaded}>
           <Search className="w-4 h-4" />
         </Button>
       </div>
 
       {/* Search Results */}
-      {searchResults.length > 0 && (
+      {predictions.length > 0 && (
         <div className="border rounded-lg divide-y bg-background max-h-48 overflow-y-auto">
-          {searchResults.map((result, index) => (
+          {predictions.map((prediction) => (
             <button
-              key={index}
+              key={prediction.place_id}
               type="button"
               className="w-full text-left px-3 py-2 hover:bg-muted transition-colors flex items-start gap-2"
-              onClick={() => handleResultSelect(result)}
+              onClick={() => handleSelectPrediction(prediction)}
             >
               <MapPin className="w-4 h-4 mt-1 text-primary shrink-0" />
-              <span className="text-sm line-clamp-2">{result.display_name}</span>
+              <span className="text-sm line-clamp-2">{prediction.description}</span>
             </button>
           ))}
         </div>
       )}
 
-      {/* Map Embed */}
-      <div className="h-64 rounded-lg overflow-hidden border bg-muted">
-        <iframe
-          title="Golf Course Location"
-          src={getMapEmbedUrl()}
-          className="w-full h-full border-0"
-          loading="lazy"
-        />
+      {/* Google Map */}
+      <div 
+        ref={mapRef} 
+        className="h-64 rounded-lg overflow-hidden border bg-muted"
+      >
+        {!isLoaded && (
+          <div className="h-full flex items-center justify-center">
+            <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+          </div>
+        )}
       </div>
 
       {/* Selected Location Display */}
@@ -126,7 +220,7 @@ export function CourseSearchMap({ onLocationSelect }: CourseSearchMapProps) {
               <p className="text-xs text-muted-foreground line-clamp-2">{selectedLocation.address}</p>
             </div>
             <a
-              href={`https://www.openstreetmap.org/?mlat=${selectedLocation.lat}&mlon=${selectedLocation.lng}#map=15/${selectedLocation.lat}/${selectedLocation.lng}`}
+              href={`https://www.google.com/maps/search/?api=1&query=${selectedLocation.lat},${selectedLocation.lng}`}
               target="_blank"
               rel="noopener noreferrer"
               className="text-primary hover:text-primary/80"
